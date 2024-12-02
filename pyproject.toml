@@ -1,0 +1,19 @@
+[project]
+name = "dify-service"
+version = "0.1.0"
+description = "A MCP server project"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+ "httpx>=0.28.0",
+ "mcp>=1.0.0",
+ "python-dotenv>=1.0.1",
+ "requests>=2.32.3",
+]
+
+[build-system]
+requires = [ "hatchling",]
+build-backend = "hatchling.build"
+
+[project.scripts]
+dify-service = "dify_service:main"
