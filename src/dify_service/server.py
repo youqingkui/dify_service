@@ -2,14 +2,13 @@ import os
 from typing import Any, Sequence
 import logging
 import sys
+import json
 
 import httpx
 import asyncio
-import anyio
 from dotenv import load_dotenv
 from mcp.shared.exceptions import McpError
-from mcp.server import Server, NotificationOptions
-from mcp.server.models import InitializationOptions
+from mcp.server import Server
 from mcp.types import (
     Resource,
     Tool,
@@ -21,7 +20,7 @@ from mcp.types import (
     INVALID_PARAMS,
     INTERNAL_ERROR,
 )
-import mcp.types as types
+
 from pydantic import AnyUrl
 
 # 设置日志
@@ -71,9 +70,7 @@ async def query_knowledge(query: str) -> dict[str, Any]:
     logger.debug("Creating HTTP client...")
     try:
         async with httpx.AsyncClient(headers=headers, timeout=30.0) as client:
-            logger.debug("HTTP client created successfully")
             logger.debug(f"Preparing request to Dify API: {query}")
-            
             request_data = {
                 "inputs": {},
                 "query": query,
@@ -81,7 +78,6 @@ async def query_knowledge(query: str) -> dict[str, Any]:
                 "user": "mcp-user"
             }
             logger.debug(f"Request data prepared: {request_data}")
-            
             logger.info(f"Sending request to {DIFY_API_BASE}/chat-messages")
             response = await client.post(
                 f"{DIFY_API_BASE}/chat-messages",
@@ -92,10 +88,12 @@ async def query_knowledge(query: str) -> dict[str, Any]:
             result = response.json()
             logger.debug(f"Response parsed successfully: {result}")
             return result
-            
     except httpx.TimeoutException:
         logger.error("Request timed out while calling Dify API", exc_info=True)
         raise McpError(INTERNAL_ERROR, "Request timed out")
+    except asyncio.CancelledError:
+        logger.error("Request cancelled by client", exc_info=True)
+        raise McpError(INTERNAL_ERROR, "Request cancelled")
     except Exception as e:
         logger.error(f"Unexpected error in query_knowledge: {str(e)}", exc_info=True)
         raise McpError(INTERNAL_ERROR, f"Unexpected error: {str(e)}")
@@ -105,9 +103,9 @@ async def list_resources() -> list[Resource]:
     """列出知识库查询功能"""
     return [
         Resource(
-            uri=AnyUrl("dify://knowledge"),
+            uri=AnyUrl("dify://test/knowledge"),
             name="Dify Knowledge Base",
-            description="Query Dify knowledge base",
+            description="Query Dify knowledge base. You can specify test query in URI like: dify://<query>/knowledge",
             mimeType="text/plain",
         )
     ]
@@ -115,17 +113,33 @@ async def list_resources() -> list[Resource]:
 @app.read_resource()
 async def read_resource(uri: AnyUrl) -> str:
     """读取知识库信息"""
-    if uri.scheme != "dify":
-        raise McpError(INVALID_PARAMS, f"Unsupported URI scheme: {uri.scheme}")
-    return "Use the query-knowledge tool to search the knowledge base."
+    logger.debug(f"Reading resource: {uri}")
+    
+    if str(uri).startswith("dify://") and str(uri).endswith("/knowledge"):
+        try:
+            # 从 URI 解析查询内容
+            uri_parts = str(uri).split("/")
+            test_query = uri_parts[-2] if len(uri_parts) > 2 else "test connection"
+            logger.debug(f"Using test query from URI: {test_query}")
+            
+            # 使用 query_knowledge 测试 API
+            result = await query_knowledge(test_query)
+            return json.dumps(result, indent=2)
+            
+        except Exception as e:
+            logger.error(f"Error reading resource: {str(e)}", exc_info=True)
+            raise McpError(INTERNAL_ERROR, f"Failed to read resource: {str(e)}")
+    else:
+        logger.warning(f"Invalid resource URI: {uri}")
+        raise McpError(INVALID_PARAMS, f"Invalid resource URI: {uri}")
 
 @app.list_tools()
 async def list_tools() -> list[Tool]:
     """列出可用工具"""
     return [
         Tool(
-            name="query-knowledge",
-            description="查询Dify知识库",
+            name="query-dify-knowledge",
+            description="Query Dify knowledge base",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -143,7 +157,7 @@ async def call_tool(
     """处理工具调用请求"""
     logger.info(f"Tool call started - name: {name}, arguments: {arguments}")
     
-    if name != "query-knowledge":
+    if name != "query-dify-knowledge":
         logger.warning(f"Unknown tool requested: {name}")
         raise McpError(INVALID_PARAMS, f"Unknown tool: {name}")
 
@@ -163,33 +177,22 @@ async def call_tool(
         ]
         logger.info("Tool call completed successfully")
         return response
-    except asyncio.CancelledError:
-        logger.error("Request cancelled by client")
-        raise McpError(INTERNAL_ERROR, "Request cancelled")
     except Exception as e:
         logger.error(f"Error during query execution: {str(e)}", exc_info=True)
         raise McpError(INTERNAL_ERROR, str(e))
 
 async def main():
-    from mcp.server.stdio import stdio_server
-    
-    logger.info("Starting Dify MCP server...")
-    
+    from mcp.server.stdio import stdio_server    
     logger.debug("Initializing stdio server...")
     options = app.create_initialization_options()
     async with stdio_server() as (read_stream, write_stream):
-        logger.info("Server transport initialized")
-        logger.debug("Starting server run...")
         await app.run(
             read_stream,
             write_stream,
             options,
-            raise_exceptions=True
+            raise_exceptions=True  # 抛出异常
         )
         logger.info("Server started successfully")
-     
-
-
 
 if __name__ == "__main__":
     asyncio.run(main())
